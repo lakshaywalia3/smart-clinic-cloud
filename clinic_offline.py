@@ -11,11 +11,21 @@ import threading
 import webbrowser
 import uuid
 import qrcode
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, Response
+
+# --- PROMETHEUS IMPORTS ---
+from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 
 app = Flask(__name__)
 DB_NAME = 'clinic_DB.db'
 PORT = 5000
+
+# ==========================================
+# PROMETHEUS METRICS DEFINITIONS
+# ==========================================
+TOKENS_BOOKED = Counter('clinic_tokens_booked_total', 'Total patient traffic')
+QUEUE_RESETS = Counter('clinic_queue_resets_total', 'System session resets')
+PATIENTS_CALLED = Counter('clinic_patients_called_total', 'Doctor efficiency/throughput')
 
 # ==========================================
 # DATABASE SETUP & HELPER FUNCTIONS
@@ -40,7 +50,6 @@ def get_db_connection():
 def get_local_ip():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        # Connect to a dummy IP to get the local IP address
         s.connect(('10.255.255.255', 1))
         IP = s.getsockname()[0]
     except Exception:
@@ -270,25 +279,33 @@ def patient_view():
 def doctor_view():
     return render_template_string(DOCTOR_HTML)
 
+# --- NEW METRICS ROUTE ---
+@app.route('/metrics')
+def metrics():
+    """Expose metrics to Prometheus"""
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
+
 @app.route('/api/book', methods=['POST'])
 def book_token():
     name = request.json.get('name')
     conn = get_db_connection()
     c = conn.cursor()
     
-    # Get next token number
     c.execute("SELECT MAX(token) FROM patients")
     max_token = c.fetchone()[0]
     next_token = 1 if max_token is None else max_token + 1
     
     c.execute("INSERT INTO patients (name, token) VALUES (?, ?)", (name, next_token))
     
-    # Get current session ID
     c.execute("SELECT value FROM settings WHERE key='session_id'")
     session_id = c.fetchone()['value']
     
     conn.commit()
     conn.close()
+    
+    # TRIGGER SRE METRIC: Patient Booked
+    TOKENS_BOOKED.inc() 
+    
     return jsonify({"token": next_token, "session_id": session_id})
 
 @app.route('/api/status', methods=['GET'])
@@ -320,9 +337,10 @@ def call_next():
     max_token = c.fetchone()[0]
     max_token = 0 if max_token is None else max_token
     
-    # Only increment if we haven't passed the last patient
     if current < max_token:
         c.execute("UPDATE settings SET value=? WHERE key='current_token'", (str(current + 1),))
+        # TRIGGER SRE METRIC: Doctor called next
+        PATIENTS_CALLED.inc()
         
     conn.commit()
     conn.close()
@@ -333,17 +351,18 @@ def reset_queue():
     conn = get_db_connection()
     c = conn.cursor()
     
-    # Clear patients
     c.execute("DELETE FROM patients")
-    c.execute("DELETE FROM sqlite_sequence WHERE name='patients'") # Reset auto-increment
+    c.execute("DELETE FROM sqlite_sequence WHERE name='patients'") 
     
-    # Reset Settings
     c.execute("UPDATE settings SET value='0' WHERE key='current_token'")
-    # Generate new session ID to force patient auto-reset
     c.execute("UPDATE settings SET value=? WHERE key='session_id'", (str(uuid.uuid4()),))
     
     conn.commit()
     conn.close()
+    
+    # TRIGGER SRE METRIC: Queue Reset
+    QUEUE_RESETS.inc()
+    
     return jsonify({"success": True})
 
 # ==========================================
@@ -360,8 +379,6 @@ if __name__ == '__main__':
     generate_qr()
     
     print("Opening Doctor Dashboard...")
-    # Open browser slightly after server starts
     threading.Timer(1.25, open_browser).start()
     
-    # Run the Flask app on all interfaces so phones on the same Wi-Fi can connect
     app.run(host='0.0.0.0', port=PORT, debug=False)
