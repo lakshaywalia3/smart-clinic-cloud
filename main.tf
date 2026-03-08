@@ -7,12 +7,10 @@ terraform {
   }
 }
 
-# Tell Terraform how to talk to your K3s cluster
 provider "kubernetes" {
   config_path = "/etc/rancher/k3s/k3s.yaml"
 }
 
-# 1. THE DEPLOYMENT: Keeps your container running
 resource "kubernetes_deployment" "clinic_app" {
   metadata {
     name = "smart-clinic"
@@ -32,9 +30,10 @@ resource "kubernetes_deployment" "clinic_app" {
       }
       spec {
         container {
-          image             = "smart-clinic:latest"
+          # ---> CHANGE THIS TO YOUR DOCKER HUB USERNAME <---
+          image             = "YOUR_DOCKERHUB_USERNAME/smart-clinic:latest"
           name              = "smart-clinic"
-          image_pull_policy = "Never" # Tells K8s to use the local image we just imported!
+          image_pull_policy = "Always" 
           
           port {
             container_port = 5000
@@ -45,7 +44,6 @@ resource "kubernetes_deployment" "clinic_app" {
   }
 }
 
-# 2. THE SERVICE: Opens the network port so you can see the app
 resource "kubernetes_service" "clinic_service" {
   metadata {
     name = "smart-clinic-service"
@@ -57,7 +55,7 @@ resource "kubernetes_service" "clinic_service" {
     port {
       port        = 5000
       target_port = 5000
-      node_port   = 30050 # We are mapping K8s port to port 30050 on your home server
+      node_port   = 30050 
     }
     type = "NodePort"
   }

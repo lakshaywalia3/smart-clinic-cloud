@@ -1,5 +1,10 @@
 pipeline {
     agent any
+    
+    // ---> CHANGE THIS TO YOUR DOCKER HUB USERNAME <---
+    environment {
+        DOCKER_IMAGE = 'YOUR_DOCKERHUB_USERNAME/smart-clinic:latest'
+    }
 
     stages {
         stage('Checkout Code') {
@@ -11,22 +16,25 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 echo 'Building the Smart Clinic Docker Image...'
-                sh 'docker build -t smart-clinic:latest .'
+                sh "docker build -t ${DOCKER_IMAGE} ."
             }
         }
 
         stage('Security Scan (Trivy)') {
             steps {
                 echo 'Running Trivy Vulnerability Scanner...'
-                sh 'trivy image --no-progress smart-clinic:latest'
+                sh "trivy image --no-progress ${DOCKER_IMAGE}"
             }
         }
 
-        stage('Push Image to Kubernetes') {
+        stage('Push to Docker Hub') {
             steps {
-                echo 'Transferring image from Docker to K3s...'
-                // Docker save doesn't need sudo, but K3s import does
-                sh 'docker save smart-clinic:latest | sudo k3s ctr images import -'
+                echo 'Pushing image to Docker Hub...'
+                // Assumes you have configured Jenkins credentials named 'docker-hub-credentials'
+                withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', passwordVariable: 'DOCKER_PASS', usernameVariable: 'DOCKER_USER')]) {
+                    sh "echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin"
+                    sh "docker push ${DOCKER_IMAGE}"
+                }
             }
         }
 
@@ -34,7 +42,6 @@ pipeline {
             steps {
                 echo 'Applying Terraform configuration...'
                 sh 'terraform init'
-                // -auto-approve means it won't wait for us to type "yes"
                 sh 'terraform apply -auto-approve'
             }
         }
